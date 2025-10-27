@@ -1,0 +1,578 @@
+#ifndef __M_SRV_H__
+#define __M_SRV_H__
+
+#include "session.hpp"
+#include "util.hpp"
+#include "online.hpp"
+#include "db.hpp"
+#include "room.hpp"
+#include "matcher.hpp"
+
+#define WWWROOT "./wwwroot/"
+
+class gobang_server
+{
+private:
+  std::string _web_root; // 静态资源根目录
+  user_table _ut;        // 特殊 初始化需要传入很多参数
+  matcher _mm;
+  online_manager _om;
+  room_manager _rm;
+  wsserver_t _wssrv;
+  session_manager _sm;
+
+private:
+  void file_handler(wsserver_t::connection_ptr &conn)
+  {
+    // 静态资源请求的处理
+    // 1.获取到请求的uri资源路径 了解客户端请求的页面文件名称
+    websocketpp::http::parser::request req = conn->get_request();
+    std::string uri = req.get_uri();
+
+    // 2.组合出文件的实际路径  相对根目录 + uri
+    std::string realpath = _web_root + uri;
+
+    // 3.如果请求的是个目录 增加一个后缀  login.html  目录的结尾是个/
+    if (realpath.back() == '/')
+    {
+      realpath += "login.html";
+    }
+
+    // 4.读取文件内容   如果文件不存在 读取内容失败 返回404
+    Json::Value resp_json;
+    std::string body;
+    bool ret = file_util::read(realpath, body);
+    if (ret == false)
+    {
+      body += "<html>";
+      body += "<head>";
+      body += "<meta charset = 'UTF - 8 '/>";
+      body += "</head>";
+      body += "<body>";
+      body += "<h1> Not Found</h1>";
+      body += "</body>";
+
+      conn->set_status(websocketpp::http::status_code::not_found);
+      conn->set_body(body);
+      return;
+    }
+
+    // 5.设置响应正文
+    conn->set_body(body);
+    conn->set_status(websocketpp::http::status_code::ok);
+  }
+
+  void http_resp(wsserver_t::connection_ptr &conn, bool result,
+                 websocketpp::http::status_code::value code, const std::string &reason)
+  {
+    Json::Value resp_json;
+    resp_json["result"] = result;
+    resp_json["reason"] = reason;
+    std::string resp_body;
+    json_util::serialize(resp_json, resp_body);
+    conn->set_status(code);
+    conn->set_body(resp_body);
+    conn->append_header("Content-Type", "application/json");
+    return;
+  }
+
+  void reg(wsserver_t::connection_ptr &conn) // 用户注册   一个是后台用户注册的业务处理 还有一个注册页面前端功能的完成
+  {
+    // 用户注册功能请求的处理
+    // 1.获取请求正文
+    websocketpp::http::parser::request req = conn->get_request();
+    std::string req_body = conn->get_request_body();
+
+    // 2.对正文进行json反序列化 得到用户名和密码
+    Json::Value login_info;
+    bool ret = json_util::unserialize(req_body, login_info);
+    if (ret == false)
+    {
+      DLOG("反序列化用户注册信息失败");
+      return http_resp(conn, false, websocketpp::http::status_code::bad_request, "请求的正文格式错误");
+    }
+
+    // 3.进行数据库的用户新增操作  成功返回200  失败返回400
+    if (login_info["username"].isNull() || login_info["password"].isNull())
+    {
+      DLOG("用户名或密码不完整");
+      return http_resp(conn, false, websocketpp::http::status_code::bad_request, "请输入用户名或密码");
+    }
+    ret = _ut.insert(login_info);
+    if (ret == false)
+    {
+      DLOG("用户名被占用，数据库插入失败");
+      return http_resp(conn, false, websocketpp::http::status_code::bad_request, "用户名被占用");
+    }
+
+    return http_resp(conn, true, websocketpp::http::status_code::ok, "注册成功");
+  }
+
+  void login(wsserver_t::connection_ptr &conn)
+  {
+    // 用户登录功能请求的处理
+    // 1.获取请求正文 进行反序列化 得到用户名和密码
+    std::string req_body = conn->get_request_body();
+    Json::Value login_info;
+    bool ret = json_util::unserialize(req_body, login_info);
+    if (ret == false)
+    {
+      DLOG("反序列化用户登录信息失败");
+      return http_resp(conn, false, websocketpp::http::status_code::bad_request, "请求的正文格式错误");
+    }
+
+    // 2.校验正文的完整性   进行数据库用户信息验证  如果失败就返回400  如果成功给客户端创建session
+    if (login_info["username"].isNull() || login_info["password"].isNull())
+    {
+      DLOG("用户名或密码不完整");
+      return http_resp(conn, false, websocketpp::http::status_code::bad_request, "请输入用户名或密码");
+    }
+    _ut.login(login_info);
+    if (ret == false)
+    {
+      DLOG("用户名密码错误");
+      return http_resp(conn, false, websocketpp::http::status_code::bad_request, "用户名密码错误");
+    }
+
+    uint64_t uid = login_info["id"].asUInt64();
+    session_ptr ssp = _sm.create_session(uid, LOGIN);
+
+    if (ssp.get() == nullptr)
+    {
+      DLOG("创建会话失败");
+      return http_resp(conn, false, websocketpp::http::status_code::internal_server_error, "创建会话失败");
+    }
+
+    _sm.set_session_expire_time(ssp->ssid(), SESSION_TIMEOUT); // 过期时间 自动删除
+
+    // 3.设置响应头部  set_cookie 将session id通过cookie返回给客户端
+    std::string cookie_ssid = "SSID=" + std::to_string(ssp->ssid()); // 获取会话id
+    conn->append_header("Set-Cookie", cookie_ssid);                  // 添加一个头部字段
+    return http_resp(conn, true, websocketpp::http::status_code::ok, "登录成功");
+  }
+
+  bool get_cookie_val(const std::string &cookie_str, const std::string &key, std::string &val)
+  { // cookie ssid=xxx; path=/;
+    // 1.以; 作为间隔 对字符串进行分割 得到各个单个的cookie信息
+    std::string sep = "; ";
+    std::vector<std::string> cookie_arr;
+    string_util::split(cookie_str, sep, cookie_arr);
+
+    // 2.对单个cookie字符串 以=为间隔进行分割  得到key和val
+    for (auto str : cookie_arr)
+    {
+      std::vector<std::string> tmp_arr;
+      string_util::split(str, "=", tmp_arr);
+      if (tmp_arr.size() != 2)
+      {
+        continue;
+      }
+      if (tmp_arr[0] == key)
+      {
+        val = tmp_arr[1];
+        return true;
+      }
+    }
+
+    return false;
+  }
+  void info(wsserver_t::connection_ptr &conn)
+  {
+    // 用户信息获取功能请求的处理
+    // 1.获取请求信息中的cookie 从cookie中获取ssid
+    Json::Value err_resp;
+    std::string cookie_str = conn->get_request_header("Cookie");
+    if (cookie_str.empty())
+    {
+      // 如果没有cookie返回错误  没有cookie信息，让客户端重新登录
+      return http_resp(conn, true, websocketpp::http::status_code::bad_request, "找不到cookie信息,请重新登录");
+    }
+    // 从cookie中取出ssid
+    std::string ssid_str;
+    bool ret = get_cookie_val(cookie_str, "SSID", ssid_str);
+    if (ret == false)
+    {
+      // cookie中没有ssid 返回错误 让客户端重新登录
+      return http_resp(conn, true, websocketpp::http::status_code::bad_request, "找不到ssid信息,请重新登录");
+    }
+
+    // 2.在session管理中查找对应的会话信息
+    session_ptr ssp = _sm.get_session_by_ssid(std::stol(ssid_str));
+    if (ssp.get() == nullptr)
+    {
+      // 没有找到session，则认为登录已经过期 重新登录
+      return http_resp(conn, true, websocketpp::http::status_code::bad_request, "找不到session信息,登录过期,请重新登录");
+    }
+
+    // 3.从数据库中取出用户信息 进行序列化发送给客户端
+    uint64_t uid = ssp->get_user();
+    Json::Value user_info;
+    ret = _ut.select_by_id(uid, user_info);
+    if (ret == false)
+    {
+      // 获取用户信息失败 返回错误
+      return http_resp(conn, true, websocketpp::http::status_code::bad_request, "找不到数据库用户信息,请重新登录");
+    }
+
+    std::string body;
+    json_util::serialize(user_info, body);
+    conn->set_body(body);
+    conn->append_header("Content-Type", "application/json");
+    conn->set_status(websocketpp::http::status_code::ok);
+    // 4.刷新session的过期时间
+    _sm.set_session_expire_time(ssp->ssid(), SESSION_TIMEOUT);
+  }
+
+  void http_callback(websocketpp::connection_hdl hdl) // 不需要wsserver_t *srv  因为有this指针
+  {
+    // 请求什么文件就返回什么文件 而不能默认返回固定的一个文件
+    wsserver_t::connection_ptr conn = _wssrv.get_con_from_hdl(hdl);
+    websocketpp::http::parser::request req = conn->get_request();
+    std::string method = req.get_method();
+    std::string uri = req.get_uri(); // 在重新整理文件名称
+
+    // std::string pathname =_web_root + uri;
+    // std::string body;   //接收读到的内容
+    // file_util::read(pathname,body); //读取文件数据
+
+    // conn->set_status(websocketpp::http::status_code::ok);      不需要这么多了 做个融合
+    // conn->set_body(body); //设置响应正文
+
+    if (method == "POST" && uri == "/reg")
+    {
+      return reg(conn);
+    }
+    else if (method == "POST" && uri == "/login")
+    {
+      return login(conn);
+    }
+    else if (method == "GET" && uri == "/info")
+    {
+      return info(conn);
+    }
+    else
+    {
+      return file_handler(conn);
+    }
+  }
+
+  void ws_resp(wsserver_t::connection_ptr conn, Json::Value &resp)
+  {
+    std::string body;
+    json_util::serialize(resp, body);
+    conn->send(body);
+    return;
+  }
+  session_ptr get_session_by_cookie(wsserver_t::connection_ptr conn)
+  {
+    // 游戏大厅长连接建立成功
+    // 1.登录验证 判断当前客户端是否已经成功登录
+    Json::Value err_resp;
+    std::string cookie_str = conn->get_request_header("Cookie");
+    if (cookie_str.empty())
+    {
+      // 如果没有cookie返回错误  没有cookie信息，让客户端重新登录  这里要用websocketpp响应 不能用http
+      err_resp["result"] = false;
+      err_resp["reason"] = "没有找到cookie信息 需要重新登录";
+      err_resp["optype"] = "hall_ready";
+      ws_resp(conn, err_resp);
+      return session_ptr();
+    }
+
+    // 从cookie中取出ssid
+    std::string ssid_str;
+    bool ret = get_cookie_val(cookie_str, "SSID", ssid_str);
+    if (ret == false)
+    {
+      // cookie中没有ssid 返回错误 让客户端重新登录
+      err_resp["result"] = false;
+      err_resp["reason"] = "没有找到ssid信息 需要重新登录";
+      err_resp["optype"] = "hall_ready";
+      ws_resp(conn, err_resp);
+      return session_ptr();
+    }
+
+    // 2.在session管理中查找对应的会话信息
+    session_ptr ssp = _sm.get_session_by_ssid(std::stol(ssid_str));
+    if (ssp.get() == nullptr)
+    {
+      // 没有找到session，则认为登录已经过期 重新登录
+      err_resp["result"] = false;
+      err_resp["reason"] = "没有找到session信息 需要重新登录";
+      err_resp["optype"] = "hall_ready";
+      ws_resp(conn, err_resp);
+      return session_ptr();
+    }
+    return ssp;
+  }
+
+  void wsopen_game_hall(wsserver_t::connection_ptr conn)
+  {
+    // 游戏大厅长连接建立成功
+    // 1.登录验证 判断当前客户端是否已经成功登录
+    session_ptr ssp = get_session_by_cookie(conn); // 消息已经回复
+    if (ssp.get() == nullptr)
+    {
+      return;
+    }
+
+    Json::Value err_resp;
+    // 2.判断当前客户端是否是重复登录  不允许顶号  用到了在线用户管理
+    if (_om.is_in_gamehall(ssp->get_user()) || _om.is_in_gameroom(ssp->get_user()))
+    {
+      err_resp["result"] = false;
+      err_resp["reason"] = "用户玩家重复登录 不允许";
+      err_resp["optype"] = "hall_ready";
+      return ws_resp(conn, err_resp);
+    }
+
+    // 3.将当前客户端以及连接加入游戏大厅
+    _om.enter_game_hall(ssp->get_user(), conn);
+
+    // 4.给客户端响应游戏大厅连接建立成功
+    Json::Value resp_json;
+    resp_json["optype"] = "hall_ready";
+    resp_json["result"] = true;
+    ws_resp(conn, resp_json);
+
+    // 5.记得将session设置为永久存在
+    _sm.set_session_expire_time(ssp->ssid(), SESSION_FOREVER);
+  }
+
+  void wsopen_game_room(wsserver_t::connection_ptr conn)
+  {
+    // 进入游戏房间就退出了游戏大厅
+    // 1.获取当前客户端的session
+    session_ptr ssp = get_session_by_cookie(conn); // 消息已经回复
+    if (ssp.get() == nullptr)
+    {
+      return;
+    }
+
+    // 2.当前用户是否已经在 在线用户管理 的游戏房间或者游戏大厅中  即重复登录
+    Json::Value err_resp;
+    if (_om.is_in_gamehall(ssp->get_user()) || _om.is_in_gameroom(ssp->get_user()))
+    {
+      err_resp["result"] = false;
+      err_resp["reason"] = "用户玩家重复登录 不允许";
+      err_resp["optype"] = "room_ready";
+      return ws_resp(conn, err_resp);
+    }
+
+    // 3.判断当前用户是否已经创建了房间  即某个房间有没有这个用户  房间管理
+    room_ptr rp = _rm.get_room_by_uid(ssp->get_user());
+    if (rp.get() == nullptr)
+    {
+      err_resp["result"] = false;
+      err_resp["reason"] = "没有找到玩家的房间信息";
+      err_resp["optype"] = "room_ready";
+      return ws_resp(conn, err_resp);
+    }
+
+    // 4.将当前用户添加到在线用户管理的游戏房间中
+    _om.enter_game_room(ssp->get_user(), conn);
+
+    // 5.将session重新设置为永久存在
+    _sm.set_session_expire_time(ssp->ssid(), SESSION_FOREVER);
+
+    // 6.回复房间准备完毕
+    err_resp["result"] = true;
+    err_resp["optype"] = "room_ready";
+    err_resp["room_id"] = (Json::UInt64)rp->id();
+    err_resp["uid"] = (Json::UInt64)ssp->get_user();
+    err_resp["white_id"] = (Json::UInt64)rp->get_white_user();
+    err_resp["black_id"] = (Json::UInt64)rp->get_black_user();
+    return ws_resp(conn, err_resp);
+  }
+  void wsopen_callback(websocketpp::connection_hdl hdl)
+  {
+    // websocket长连接建立成功之后的处理函数  分为两种  大厅的长连接  房间的长连接
+    wsserver_t::connection_ptr conn = _wssrv.get_con_from_hdl(hdl); // 总是要发送请求过来 但是路径不一样
+    websocketpp::http::parser::request req = conn->get_request();   // 所以从请求中获取到底是大厅还是房间的长连接
+    std::string uri = req.get_uri();
+    if (uri == "/hall") // 建立了大厅的长连接
+    {
+      wsopen_game_hall(conn);
+    }
+    else if (uri == "/room") // 建立了房间的长连接
+    {
+      wsopen_game_room(conn);
+    }
+  }
+
+  void wsclose_game_hall(wsserver_t::connection_ptr conn)
+  {
+    // 游戏大厅长连接断开的处理
+    // 登录验证 判断当前客户端是否已经成功登录
+    session_ptr ssp = get_session_by_cookie(conn); // 消息已经回复
+    if (ssp.get() == nullptr)
+    {
+      return;
+    }
+
+    // 1.将玩家从游戏大厅中移除
+    _om.exit_game_hall(ssp->get_user());
+
+    // 2.将session回复生命周期的管理 设置定时销毁
+    _sm.set_session_expire_time(ssp->ssid(), SESSION_TIMEOUT);
+  }
+
+  void wsclose_game_room(wsserver_t::connection_ptr conn)
+  {
+    // 获取会话信息 识别客户端
+    session_ptr ssp = get_session_by_cookie(conn); // 消息已经回复
+    if (ssp.get() == nullptr)
+    {
+      return;
+    }
+    // 1.将玩家从在线用户管理中移除
+    _om.exit_game_room(ssp->get_user());
+    // 2.将session回复生命周期的管理 设置定时销毁
+    _sm.set_session_expire_time(ssp->ssid(), SESSION_TIMEOUT);
+    // 3.将玩家从游戏房间中移除 房间中所有用户退出了就会销毁房间
+    _rm.remove_room_user(ssp->get_user());
+  }
+
+  void wsclose_callback(websocketpp::connection_hdl hdl)
+  {
+    // websocket连接断开前的处理
+    wsserver_t::connection_ptr conn = _wssrv.get_con_from_hdl(hdl); // 总是要发送请求过来 但是路径不一样
+    websocketpp::http::parser::request req = conn->get_request();   // 所以从请求中获取到底是大厅还是房间的长连接
+    std::string uri = req.get_uri();
+    if (uri == "/hall") // 大厅的长连接
+    {
+      wsclose_game_hall(conn);
+    }
+    else if (uri == "/room") // 房间的长连接
+    {
+      wsclose_game_room(conn);
+    }
+  }
+
+  void wsmsg_game_hall(wsserver_t::connection_ptr conn, wsserver_t::message_ptr msg)
+  {
+    Json::Value resp_json;
+    std::string resp_body;
+    // 身份验证
+    session_ptr ssp = get_session_by_cookie(conn); // 消息已经回复
+    if (ssp.get() == nullptr)
+    {
+      return;
+    }
+
+    // 2.获取请求信息
+    std::string req_body = msg->get_payload();
+
+    Json::Value req_json;
+    bool ret = json_util::unserialize(req_body, req_json);
+    if (ret == false)
+    {
+      resp_json["result"] = false;
+      resp_json["reason"] = "请求信息解析失败";
+
+      return ws_resp(conn, resp_json);
+    }
+
+    // 3.对于请求进行处理
+    if (!req_json["optype"].isNull() && req_json["optype"].asString() == "match_start")
+    {
+      // 开始对战匹配：通过匹配模块 将用户添加到匹配队列中
+      _mm.add(ssp->get_user());
+      resp_json["optype"] = "match_start";
+      resp_json["result"] = true;
+      return ws_resp(conn, resp_json);
+    }
+    else if (!req_json["optype"].isNull() && req_json["optype"].asString() == "match_stop")
+    {
+      // 停止对战匹配：通过匹配模块 将用户从匹配队列中移除
+      _mm.del(ssp->get_user());
+      resp_json["optype"] = "match_stop";
+      resp_json["result"] = true;
+      return ws_resp(conn, resp_json);
+    }
+    resp_json["optype"] = "unknow";
+    resp_json["result"] = false;
+    return ws_resp(conn, resp_json);
+  }
+  void wsmsg_game_room(wsserver_t::connection_ptr conn, wsserver_t::message_ptr msg)
+  {
+    // 1.获取客户端session  识别客户端身份
+    session_ptr ssp = get_session_by_cookie(conn); // 消息已经回复
+    if (ssp.get() == nullptr)
+    {
+      return;
+    }
+
+    Json::Value resp_json;
+    // 2.获取客户端房间信息
+    room_ptr rp = _rm.get_room_by_uid(ssp->get_user());
+    if (rp.get() == nullptr)
+    {
+      resp_json["optype"] = "unknow";
+      resp_json["reason"] = "没有找到玩家的房间信息";
+      resp_json["result"] = false;
+      return ws_resp(conn, resp_json);
+    }
+
+    std::string body;
+    // 3.将消息进行反序列化
+    body = msg->get_payload();
+    bool ret = json_util::unserialize(body, resp_json);
+    if (ret == false)
+    {
+      resp_json["optype"] = "unknow";
+      resp_json["reason"] = "请求解析失败";
+      resp_json["result"] = false;
+      return ws_resp(conn, resp_json);
+    }
+    // 4.通过房间模块进行信息的处理
+    return rp->handle_request(resp_json);
+  }
+
+  void wsmsg_callback(websocketpp::connection_hdl hdl, wsserver_t::message_ptr msg)
+  {
+    // websocket长连接通信处理
+    wsserver_t::connection_ptr conn = _wssrv.get_con_from_hdl(hdl); // 总是要发送请求过来 但是路径不一样
+    websocketpp::http::parser::request req = conn->get_request();   // 所以从请求中获取到底是大厅还是房间的长连接
+    std::string uri = req.get_uri();
+    if (uri == "/hall") // 大厅的长连接
+    {
+      wsmsg_game_hall(conn, msg);
+    }
+    else if (uri == "/room") // 房间的长连接
+    {
+      wsmsg_game_room(conn, msg);
+    }
+  }
+
+public:
+  // 成员初始化 以及服务器回调函数的设置
+  gobang_server(const std::string &host,
+                const std::string &username,
+                const std::string &password,
+                const std::string &dbname,
+                uint16_t port = 3306,
+                const std::string &wwwroot = WWWROOT) : _web_root(wwwroot),
+                                                        _ut(host, username, password, dbname, port),
+                                                        _rm(&_ut, &_om),
+                                                        _sm(&_wssrv),
+                                                        _mm(&_rm, &_ut, &_om)
+  {
+    _wssrv.set_access_channels(websocketpp::log::alevel::none);
+    _wssrv.init_asio();
+    _wssrv.set_reuse_addr(true);
+    _wssrv.set_http_handler(std::bind(&gobang_server::http_callback, this, std::placeholders::_1)); // this传递的是函数自身
+    _wssrv.set_open_handler(std::bind(&gobang_server::wsopen_callback, this, std::placeholders::_1));
+    _wssrv.set_close_handler(std::bind(&gobang_server::wsclose_callback, this, std::placeholders::_1));
+    _wssrv.set_message_handler(std::bind(&gobang_server::wsmsg_callback, this, std::placeholders::_1, std::placeholders::_2));
+  }
+  // 启动服务器
+  void start(int port)
+  {
+    _wssrv.listen(port);   // 监听端口
+    _wssrv.start_accept(); // 获取新连接
+    _wssrv.run();
+  }
+};
+
+#endif
