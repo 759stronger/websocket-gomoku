@@ -24,16 +24,19 @@
 
 | 路径 | 职责 |
 | --- | --- |
-| `source/gobang.cc` | 程序入口、数据库连接参数、监听端口 |
-| `source/server.hpp` | HTTP 与 WebSocket 路由、连接与消息回调 |
-| `source/db.hpp`、`source/db.sql` | 用户数据访问与建表脚本 |
-| `source/session.hpp` | 会话与定时过期管理 |
-| `source/online.hpp` | 大厅/房间用户 ID 与连接的映射 |
-| `source/matcher.hpp` | 积分分档、匹配队列与工作线程 |
-| `source/room.hpp` | 棋盘、落子、胜负、聊天广播与房间管理 |
-| `source/wwwroot/` | 登录、注册、大厅、房间网页及静态资源 |
-| `Online_backgammon/` | MySQL、JSON 和 WebSocket 的独立学习实验 |
-| `WebBench-master/` | 仓库附带的 HTTP 压测工具 |
+| `src/main.cc` | 程序入口、环境变量配置装配、监听端口 |
+| `include/gomoku/config.h` | C/C++ 共用的数据库环境配置与端口检查 |
+| `tests/config_test.cpp` | 不连接数据库的配置边界测试 |
+| `Makefile` | 根构建入口，可覆盖 MySQL 编译/链接参数 |
+| `include/gomoku/server.hpp` | HTTP 与 WebSocket 路由、连接与消息回调 |
+| `include/gomoku/db.hpp`、`resources/sql/db.sql` | 用户数据访问与建表脚本 |
+| `include/gomoku/session.hpp` | 会话与定时过期管理 |
+| `include/gomoku/online.hpp` | 大厅/房间用户 ID 与连接的映射 |
+| `include/gomoku/matcher.hpp` | 积分分档、匹配队列与工作线程 |
+| `include/gomoku/room.hpp` | 棋盘、落子、胜负、聊天广播与房间管理 |
+| `resources/wwwroot/` | 登录、注册、大厅、房间网页及静态资源 |
+| `examples/dependencies/` | MySQL、JSON 和 WebSocket 的独立学习实验 |
+| `third_party/webbench/` | 仓库附带的 HTTP 压测工具 |
 
 附带 WebBench 不等于已有性能结论；仓库没有提供可复核的五子棋服务压测结果。
 
@@ -69,48 +72,83 @@ MariaDB 文档仍提供该函数，但本项目未给出经联调的数据库版
 
 ```bash
 git clone https://github.com/759stronger/websocket-gomoku.git
-cd websocket-gomoku/source
+cd websocket-gomoku
 ```
 
-**`db.sql` 第一行会执行 `DROP DATABASE IF EXISTS gobang`。只在不含业务数据的独立测试实例中初始化；不要在共享或正式数据库上直接执行。**
+**`resources/sql/db.sql` 第一行会执行 `DROP DATABASE IF EXISTS gobang`。只在不含业务数据的独立测试实例中初始化；不要在共享或正式数据库上直接执行。**
 
 核对脚本后，使用有初始化权限的测试数据库账号执行；将 `YOUR_DB_ADMIN` 换成自己的账号，`-p` 会交互输入口令：
 
 ```bash
-mysql -h 127.0.0.1 -u YOUR_DB_ADMIN -p < db.sql
+mysql -h 127.0.0.1 -u YOUR_DB_ADMIN -p < resources/sql/db.sql
 ```
 
 为应用准备仅访问测试 `gobang` 数据库的专用账号。应用业务需要用户表的查询、插入和更新权限，不必沿用源码中的管理员账号。
 
-### 3. 设置本地连接参数
+### 3. 设置数据库环境变量
 
-连接参数位于 `source/gobang.cc` 顶部。按本地测试环境替换，下面只展示占位值：
+主服务和独立 MySQL 练习共享 `include/gomoku/config.h`，从环境变量读取连接配置：
 
-```cpp
-#define HOST "127.0.0.1"
-#define USER "YOUR_DEMO_DB_USER"
-#define PASS "YOUR_LOCAL_DB_PASSWORD"
-#define DBNAME "gobang"
-#define PORT 3306
-```
+| 环境变量 | 要求 / 默认值 |
+| --- | --- |
+| GOMOKU_DB_HOST | 可省略，默认 127.0.0.1 |
+| GOMOKU_DB_USER | 必须非空，使用专用测试账号 |
+| GOMOKU_DB_PASSWORD | 必须非空；不会在配置诊断中打印 |
+| GOMOKU_DB_NAME | 可省略，默认 gobang |
+| GOMOKU_DB_PORT | 可省略，默认 3306；指定时须为 1–65535 的十进制整数 |
 
-仓库原有配置包含硬编码口令。本 README 不重复该口令；若原口令曾真实使用，应轮换。不要把自己替换后的真实凭据提交到公共仓库。
-
-### 4. 编译并从静态资源所在目录启动
-
-原 `source/makefile` 使用 `/usr/lib64/mysql` 作为库路径。依赖安装路径匹配时可执行 `make`。也可仅编译入口源文件，避免将头文件作为独立输入：
+在启动进程的终端中配置，例如：
 
 ```bash
-g++ -g -std=c++11 gobang.cc -o gobang \
-  -lmysqlclient -ljsoncpp -lboost_system -pthread
-./gobang
+export GOMOKU_DB_HOST=127.0.0.1
+export GOMOKU_DB_USER=YOUR_DEMO_DB_USER
+export GOMOKU_DB_PASSWORD="<your-local-password>"
+export GOMOKU_DB_NAME=gobang
+export GOMOKU_DB_PORT=3306
 ```
 
-该命令要求依赖头文件和库已在编译器默认搜索路径；非标准安装位置需按实际环境补充 `-I` 和 `-L`。服务默认端口为 `8085`，静态资源根目录为相对路径 `./wwwroot/`，因此请在 `source/` 目录启动。
+缺失凭据或非法端口会在连接数据库之前退出。配置变更只替换连接参数来源，没有改写注册、登录的 SQL 或业务认证逻辑。不要把真实凭据写回代码或提交到公共仓库；历史版本曾包含硬编码连接配置，若曾实际使用过，应轮换。
 
-仓库附带了历史编译产物；演示时应从源码重新构建，避免依赖其平台和动态库环境。
+### 4. 编译并从项目根目录启动
 
-### 5. 演示一局对战
+```bash
+make
+./build/websocket-gomoku
+```
+
+根 Makefile 将头文件列为依赖，但只编译 `src/main.cc`，输出放在 `build/`。默认链接 MySQL C API、JsonCpp、Boost.System 与 pthread。
+
+若 MySQL 头文件或库不在默认搜索路径，可显式传入参数：
+
+```bash
+make MYSQL_CPPFLAGS="-I/path/to/mysql/include" \
+  MYSQL_LIBS="-L/path/to/mysql/lib -lmysqlclient"
+```
+
+服务默认端口仍为 `8085`，静态资源根目录为相对路径 `./resources/wwwroot/`，因此请从项目根目录启动。应用主体仍使用头文件中的实现，各独立程序分别构建，不能把所有示例的入口一起链接。
+
+旧编译产物与原 makefile 只在本地 `artifacts/legacy/` 存档，不纳入新源码提交。完整 Linux 服务构建与双客户端运行尚未复测。
+
+### 5. 验证连接配置（不连接数据库）
+
+在准备好 GNU make 与 C++11 编译器的环境中：
+
+```bash
+make config-test
+```
+
+测试覆盖缺失用户名/口令、默认值、显式配置、端口边界，以及非法、带符号、含空白、非整数和溢出端口。该测试只修改自身进程的环境变量，不启动服务或访问 MySQL。
+
+当前已用 Windows MSYS2 UCRT g++ 15.2.0 编译并运行这项独立测试，19 项检查均通过；配置头文件也通过 C11 语法检查。Windows 手工命令为：
+
+```powershell
+g++ -std=c++11 -Wall -Wextra -pedantic -Iinclude tests/config_test.cpp -o build/config_test.exe
+.\build\config_test.exe
+```
+
+请先确保 `build/` 存在，并从项目根目录执行。这项验证不代表完整 MySQL/WebSocket 服务已经构建或运行通过。
+
+### 6. 演示一局对战
 
 1. 打开 `http://127.0.0.1:8085/register.html`，注册两个测试账号。
 2. 使用两个独立浏览器会话登录 `http://127.0.0.1:8085/login.html`；可使用两个浏览器或普通窗口与隐私窗口，避免共享同一 Cookie。
@@ -118,7 +156,7 @@ g++ -g -std=c++11 gobang.cc -o gobang \
 4. 匹配成功后交替落子，查看双方棋盘同步和聊天。
 5. 对局结束后返回大厅，检查积分及对局统计。
 
-如果资料接口失败，先核对数据库连接、`PASSWORD()` 兼容性和初始化结果；如果网页返回 404，核对启动目录和 `wwwroot/`；无法连接时核对端口占用和网络访问条件。
+如果资料接口失败，先核对数据库连接、`PASSWORD()` 兼容性和初始化结果；如果网页返回 404，核对启动目录和 `resources/wwwroot/`；无法连接时核对端口占用和网络访问条件。
 
 ## 已知限制
 
@@ -131,6 +169,6 @@ g++ -g -std=c++11 gobang.cc -o gobang \
 
 ## 说明范围
 
-本说明依据提交 `a808a2e6e4cbc54890f4c4137476cf3b83977959` 的目录、构建文件和业务代码整理，未在此次整理中运行仓库代码。主题图为概念配图，架构图为模块关系示意。
+业务功能以原提交 `a808a2e6e4cbc54890f4c4137476cf3b83977959` 为基础，目录和连接配置已按当前源码调整。本次仅验证独立配置单元，没有运行五子棋服务器或数据库。主题图为概念配图，架构图为模块关系示意。
 
 仓库尚未声明统一的项目许可证。附带工具及第三方库可能各有许可证，公开源码不代表可自动按任意开源许可证再发布。

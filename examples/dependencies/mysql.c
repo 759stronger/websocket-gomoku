@@ -1,15 +1,25 @@
 #include <stdio.h>
 #include <string.h>
 #include <mysql/mysql.h>
+#include "gomoku/config.h"
+static GomokuDbConfig database_config = {0};
+#define HOST database_config.host
+#define USER database_config.user
+#define PASS database_config.password
+#define DBNAME database_config.database
+#define PORT database_config.port
 
-#define HOST "127.0.0.1"  //mysql地址  用本地登录 默认不允许进行远程登陆
-#define USER "root"
-#define PASS  "d#XhdU4aIT):"
-#define DBNAME "gobang"
-#define PORT  3306
+
 
 int main()
 {
+    const GomokuConfigStatus config_status = gomoku_db_config_from_env(&database_config);
+    if (config_status != GOMOKU_CONFIG_OK)
+    {
+        fprintf(stderr, "Database configuration rejected (%d). Set GOMOKU_DB_USER/GOMOKU_DB_PASSWORD and use a port in 1..65535.\n", (int)config_status);
+        return 1;
+    }
+
     //1.初始化mysql句柄
     //MYSQL *mysql_intit(MYSQL*mysql)
     MYSQL *mysql = mysql_init(NULL);

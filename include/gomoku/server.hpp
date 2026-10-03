@@ -8,7 +8,7 @@
 #include "room.hpp"
 #include "matcher.hpp"
 
-#define WWWROOT "./wwwroot/"
+#define WWWROOT "./resources/wwwroot/"
 
 class gobang_server
 {

@@ -1,10 +1,13 @@
-#include "server.hpp"
+#include "gomoku/server.hpp"
+#include "gomoku/config.h"
+static GomokuDbConfig database_config = {0};
+#define HOST database_config.host
+#define USER database_config.user
+#define PASS database_config.password
+#define DBNAME database_config.database
+#define PORT database_config.port
 
-#define HOST "127.0.0.1" // mysql地址  用本地登录 默认不允许进行远程登陆
-#define USER "root"
-#define PASS "d#XhdU4aIT):"
-#define DBNAME "gobang"
-#define PORT 3306
+
 
 void mysql_test()
 {
@@ -72,7 +75,7 @@ void db_test()
     user_table ut(HOST, USER, PASS, DBNAME, PORT);
     Json::Value user;
     user["username"]="弟弟12";
-    //user["password"]="987563";
+    //user["password"]=(getenv("GOMOKU_DEMO_PASSWORD") ? getenv("GOMOKU_DEMO_PASSWORD") : "");
      ut.insert(user);
    // std::string body;
    // json_util::serialize(user,body);
@@ -120,6 +123,13 @@ void session_manager()
 
 int main()
 {
+    const GomokuConfigStatus config_status = gomoku_db_config_from_env(&database_config);
+    if (config_status != GOMOKU_CONFIG_OK)
+    {
+        fprintf(stderr, "Database configuration rejected (%d). Set GOMOKU_DB_USER/GOMOKU_DB_PASSWORD and use a port in 1..65535.\n", (int)config_status);
+        return 1;
+    }
+
     // ILOG("哈哈哈");//格式化数据然后进行输出
     // DLOG("哈哈");
     // ELOG("哈");
