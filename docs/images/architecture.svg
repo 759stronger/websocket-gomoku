@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="850" viewBox="0 0 1600 850" role="img" aria-labelledby="gomoku-title gomoku-desc">
+<title id="gomoku-title">在线五子棋的浏览器、实时服务和数据库关系</title>
+<desc id="gomoku-desc">概念架构图。浏览器发送 HTTP 注册登录与资料请求，并通过 WebSocket 大厅和房间连接发送匹配、落子、聊天消息。server.hpp 分发请求，session 与 online 管理会话和在线连接，matcher 配对，room 更新棋盘并判定胜负。MySQL 保存账号、积分和对局统计。青绿色回箭头表示 JSON、Cookie、房间回包与广播。图不表示已完成安全认证或生产加固。</desc>
+<defs><style>text{font-family:"Microsoft YaHei","Noto Sans CJK SC","PingFang SC",sans-serif;fill:#17364f} .title{font-size:38px;font-weight:700}.sub{font-size:26px;fill:#526c7c}.label{font-size:28px;font-weight:700}.body{font-size:25px}.small{font-size:24px;fill:#526c7c}.panel{fill:#ffffff;stroke:#d3e1e8;stroke-width:2}.blue{fill:#eaf2ff;stroke:#aac7e5;stroke-width:2}.teal{fill:#e7f5f2;stroke:#9acec4;stroke-width:2}.warm{fill:#fff2e1;stroke:#e9c28e;stroke-width:2}.flow{fill:none;stroke:#326d92;stroke-width:4;stroke-linecap:round;stroke-linejoin:round;marker-end:url(#arrow)}.return{fill:none;stroke:#239283;stroke-width:4;stroke-linecap:round;stroke-linejoin:round;marker-end:url(#backArrow)}.aux{fill:none;stroke:#c28a43;stroke-width:3.5;stroke-dasharray:9 8;stroke-linecap:round;stroke-linejoin:round;marker-end:url(#auxArrow)}</style><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#326d92"/></marker><marker id="backArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#239283"/></marker><marker id="auxArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#c28a43"/></marker></defs>
+<rect width="1600" height="850" fill="#f4f8fb"/>
+<text x="50" y="70" class="title">WebSocket Gomoku · 一局对战如何流转</text>
+<text x="50" y="116" class="sub">HTTP 管理账号资料，WebSocket 连接大厅与房间；概念示意，非运行截图</text>
+<rect x="40" y="175" width="360" height="535" rx="20" class="panel"/>
+<text x="70" y="226" class="label">浏览器客户端</text>
+<rect x="65" y="250" width="310" height="140" rx="15" class="blue"/>
+<text x="88" y="292" class="label">HTTP · 账号与资料</text>
+<text x="88" y="334" class="body">注册 / 登录 / 用户信息</text>
+<text x="88" y="371" class="small">POST /reg、/login</text>
+<rect x="65" y="425" width="310" height="215" rx="15" class="teal"/>
+<text x="88" y="469" class="label">WebSocket 连接</text>
+<text x="88" y="510" class="body">/hall · 开始 / 停止匹配</text>
+<text x="88" y="551" class="body">/room · 落子 / 聊天</text>
+<text x="88" y="597" class="small">Canvas 绘制 15 × 15 棋盘</text>
+<text x="70" y="680" class="small">回包驱动网页状态与棋子显示</text>
+<rect x="550" y="175" width="650" height="535" rx="20" class="panel"/>
+<text x="580" y="226" class="label">C++ 服务端</text>
+<rect x="580" y="250" width="590" height="75" rx="15" class="blue"/>
+<text x="875" y="297" class="label" text-anchor="middle">server.hpp · 请求与连接分发</text>
+<rect x="580" y="375" width="270" height="105" rx="15" class="teal"/>
+<text x="715" y="418" class="label" text-anchor="middle">session</text>
+<text x="715" y="458" class="body" text-anchor="middle">Cookie → 内存会话</text>
+<rect x="900" y="375" width="270" height="105" rx="15" class="teal"/>
+<text x="1035" y="418" class="label" text-anchor="middle">online</text>
+<text x="1035" y="458" class="body" text-anchor="middle">玩家 ID ↔ 在线连接</text>
+<rect x="580" y="535" width="270" height="120" rx="15" class="warm"/>
+<text x="715" y="578" class="label" text-anchor="middle">matcher</text>
+<text x="715" y="618" class="body" text-anchor="middle">积分分档 · 配对建房</text>
+<rect x="900" y="535" width="270" height="120" rx="15" class="warm"/>
+<text x="1035" y="578" class="label" text-anchor="middle">room</text>
+<text x="1035" y="618" class="body" text-anchor="middle">棋盘 · 胜负 · 广播</text>
+<path d="M715 325 V370" class="flow"/>
+<path d="M1035 325 V370" class="flow"/>
+<path d="M715 480 V530" class="flow"/>
+<path d="M1035 480 V530" class="flow"/>
+<path d="M850 588 H895" class="flow"/>
+<text x="875" y="528" class="small" text-anchor="middle">建房</text>
+<path d="M400 288 H542" class="flow"/>
+<text x="475" y="270" class="small" text-anchor="middle">HTTP 请求</text>
+<path d="M542 365 H407" class="return"/>
+<text x="475" y="346" class="small" text-anchor="middle">JSON / Cookie</text>
+<path d="M400 496 H542" class="flow"/>
+<text x="475" y="477" class="small" text-anchor="middle">WS 消息</text>
+<path d="M542 598 H407" class="return"/>
+<text x="475" y="580" class="small" text-anchor="middle">回包 / 广播</text>
+<rect x="1320" y="315" width="240" height="325" rx="20" class="panel"/>
+<ellipse cx="1440" cy="382" rx="86" ry="24" fill="#eaf2ff" stroke="#aac7e5" stroke-width="2"/>
+<path d="M1354 382 V429 C1354 461 1526 461 1526 429 V382" fill="#eaf2ff" stroke="#aac7e5" stroke-width="2"/>
+<ellipse cx="1440" cy="382" rx="86" ry="24" fill="#eaf2ff" stroke="#aac7e5" stroke-width="2"/>
+<text x="1440" y="425" class="label" text-anchor="middle">MySQL</text>
+<text x="1440" y="494" class="body" text-anchor="middle">账号 / 积分</text>
+<text x="1440" y="536" class="body" text-anchor="middle">总场次 / 胜场</text>
+<text x="1440" y="588" class="small" text-anchor="middle">胜 +30 · 负 −30</text>
+<path d="M1200 460 H1312" class="flow"/>
+<text x="1260" y="439" class="small" text-anchor="middle">查询 / 更新</text>
+<path d="M1312 556 H1207" class="return"/>
+<text x="1260" y="537" class="small" text-anchor="middle">结果</text>
+<rect x="40" y="748" width="1520" height="66" rx="16" class="warm"/>
+<text x="65" y="790" class="body">学习演示范围：登录返回、SQL 与落子校验仍需加固；图中没有安全鉴权或公网部署保证</text>
+</svg>
